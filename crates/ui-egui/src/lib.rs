@@ -767,15 +767,21 @@ pub struct PdfCraftApp {
     pub export_draft: export_ui::ExportDraft,
     /// A running export's progress.
     export_status: Option<export_ui::ExportStatus>,
-    /// The saved Fill & Sign signature and initials (drawn or typed).
+    /// The saved Fill & Sign signature and initials in use (drawn, typed or an image): what the
+    /// Signature and Initials tools place.
     pub signature: Option<fill_sign::SavedSig>,
     pub initials: Option<fill_sign::SavedSig>,
+    /// The other saved signatures and initials, most recently used first (see
+    /// [`fill_sign::SavedList`], through [`Self::saved_list`]).
+    pub other_signatures: Vec<fill_sign::SavedSig>,
+    pub other_initials: Vec<fill_sign::SavedSig>,
     /// The Create signature / initials dialog, and its typed preview.
     pub signature_draft: fill_sign::SigDraft,
     pub(crate) signature_preview: Option<(fill_sign::SavedSig, egui::TextureHandle)>,
     /// The Scan tab's photo, keyed by its version.
     pub(crate) signature_photo: Option<(u64, egui::TextureHandle)>,
-    pub(crate) saved_signature_previews: [Option<(fill_sign::SavedSig, egui::TextureHandle)>; 2],
+    /// Card previews, signatures then initials, in [`fill_sign::SavedList`] order.
+    pub(crate) saved_signature_previews: Vec<Option<(fill_sign::SavedSig, egui::TextureHandle)>>,
     /// What visible digital signatures show on their left, and its preview in Sign as.
     pub sign_graphic: sign_ui::SignGraphic,
     pub(crate) sign_graphic_preview: Option<(fill_sign::SavedSig, egui::TextureHandle)>,
@@ -1049,10 +1055,12 @@ impl PdfCraftApp {
             export_status: None,
             signature: None,
             initials: None,
+            other_signatures: Vec::new(),
+            other_initials: Vec::new(),
             signature_draft: Default::default(),
             signature_preview: None,
             signature_photo: None,
-            saved_signature_previews: [None, None],
+            saved_signature_previews: Vec::new(),
             sign_graphic: sign_ui::SignGraphic::Name,
             sign_graphic_preview: None,
             #[cfg(target_arch = "wasm32")]
@@ -2277,6 +2285,8 @@ impl PdfCraftApp {
         });
         // Set apart: one more key inside the macro above passes serde_json's recursion limit.
         v["redact_prefs"] = self.redact_defaults.to_json();
+        v["other_signatures"] = serde_json::json!(self.other_signatures);
+        v["other_initials"] = serde_json::json!(self.other_initials);
         v.to_string()
     }
 
@@ -2419,6 +2429,17 @@ impl PdfCraftApp {
         }
         if let Ok(i) = serde_json::from_value::<fill_sign::SavedSig>(v["initials"].clone()) {
             self.initials = Some(i);
+        }
+        // Entry by entry, so one damaged entry loses only itself; at most the saved limit.
+        for (key, others) in [("other_signatures", &mut self.other_signatures), ("other_initials", &mut self.other_initials)] {
+            if let Some(list) = v[key].as_array() {
+                *others = list
+                    .iter()
+                    .filter_map(|e| serde_json::from_value::<fill_sign::SavedSig>(e.clone()).ok())
+                    .filter(fill_sign::SavedSig::is_valid)
+                    .take(fill_sign::MAX_SAVED_SIGNATURES - 1)
+                    .collect();
+            }
         }
         // An unreadable choice (a damaged image) falls back to the name.
         self.sign_graphic = serde_json::from_value(v["sign_graphic"].clone()).unwrap_or_default();
